@@ -1,0 +1,17 @@
+[Unit]
+Description=WebSocket Client Service with Speech Recognition
+After=graphical.target
+
+[Service]
+Type=simple
+User=avelgar
+Group=avelgar
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/avelgar/.Xauthority
+WorkingDirectory=/home/avelgar
+ExecStart=/home/avelgar/start_ar_camera.sh  # <-- ИЗМЕНЕНО!
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=graphical.target
