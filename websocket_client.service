@@ -8,8 +8,8 @@ User=avelgar
 Group=avelgar
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=/home/avelgar/.Xauthority
-WorkingDirectory=/home/avelgar
-ExecStart=/home/avelgar/start_ar_camera.sh  # <-- ИЗМЕНЕНО!
+WorkingDirectory=/home/avelgar/friday_client/
+ExecStart=/home/avelgar/myenv/bin/python3 /home/avelgar/friday_client/main.py
 Restart=always
 RestartSec=5
 
