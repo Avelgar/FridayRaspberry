@@ -12,7 +12,7 @@ import sys
 sys.stdout.reconfigure(line_buffering=True)
 
 from config import URI, PING_INTERVAL, MUSIC_FOLDER
-from peripherals import RobotController, MusicPlayer, CameraManager
+from peripherals import RobotController, MusicPlayer, CameraManager, JoystickController
 from voice_service import VoiceService
 from command_handler import process_message
 
@@ -20,7 +20,7 @@ def get_mac_address():
     try:
         with open('/sys/class/net/wlan0/address', 'r') as f: 
             return f.read().strip()
-    except: 
+    except Exception: 
         return "00:11:22:33:44:55"
 
 async def websocket_handler(ws_queue, voice_service, mac):
@@ -60,13 +60,13 @@ async def websocket_handler(ws_queue, voice_service, mac):
                 await asyncio.gather(send_loop(), ping_loop(), recv_loop())
 
         except Exception as e:
-            print(f"⚠️ Разрыв связи. Реконнект через 5с... ({e})")
+            print(f"⚠️ Разрыв связи / нет Wi-Fi. Реконнект через 5с... ({e})")
             await asyncio.sleep(5)
 
 def main():
-    print("="*40)
-    print(f"🤖 ПЯТНИЦА PiBot ЗАПУСКАЕТСЯ... ")
-    print("="*40)
+    print("=" * 45)
+    print("🤖 ПЯТНИЦА PiBot ЗАПУСКАЕТСЯ (18 СЕРВО + XBOX ДЖОЙСТИК)...")
+    print("=" * 45)
     
     mac_address = get_mac_address()
     loop = asyncio.new_event_loop()
@@ -74,25 +74,35 @@ def main():
     
     music_player = MusicPlayer(MUSIC_FOLDER)
     robot = RobotController()
-    camera = CameraManager() # 1. Создали камеру
+    camera = CameraManager()
     
-    # 2. Передали camera последним параметром:
+    # Запуск автономного управления с джойстика (работает всегда, даже без Wi-Fi!)
+    joystick = JoystickController(robot)
+    joystick.start()
+    
+    # Голосовой сервис
     voice_service = VoiceService(ws_queue, loop, mac_address, music_player, robot, camera)
     
     # Запуск записи микрофона
     voice_service.start_listening()
     
-    # Запуск WebSocket
-    t_ws = threading.Thread(target=lambda: loop.run_until_complete(websocket_handler(ws_queue, voice_service, mac_address)), daemon=True)
+    # Запуск WebSocket в фоновом потоке
+    t_ws = threading.Thread(
+        target=lambda: loop.run_until_complete(websocket_handler(ws_queue, voice_service, mac_address)),
+        daemon=True
+    )
     t_ws.start()
     
-    print("💤 Режим ожидания... (Скрипт работает в фоне)")
+    print("💤 Пятница активна. Доступно управление голосом и джойстиком!")
     try:
         while True: 
             time.sleep(1)
     except KeyboardInterrupt: 
-        print("Выход...")
+        print("\nОстановка служб...")
+        joystick.stop()
+        robot.stop()
         camera.stop()
+        print("Выход завершен.")
 
 if __name__ == "__main__":
     main()

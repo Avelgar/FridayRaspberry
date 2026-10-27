@@ -7,6 +7,7 @@ import threading
 import subprocess
 import audioop
 import json
+import re
 from datetime import datetime
 from config import state
 from ctypes import *
@@ -23,7 +24,8 @@ def no_alsa_err():
         asound.snd_lib_error_set_handler(c_error_handler)
         yield
         asound.snd_lib_error_set_handler(None)
-    except: yield
+    except Exception:
+        yield
 
 class VoiceService:
     def __init__(self, ws_queue, loop, mac_address, music_player, robot, camera):
@@ -32,7 +34,7 @@ class VoiceService:
         self.mac = mac_address
         self.player = music_player
         self.robot = robot
-        self.camera = camera # <--- ПОДКЛЮЧИЛИ КАМЕРУ
+        self.camera = camera
         
         self.message_history = []
         
@@ -47,7 +49,7 @@ class VoiceService:
         self.is_speaking = False
         
         self.last_speech_time = time.time()
-        self.last_video_time = 0 # Таймер для 1 FPS
+        self.last_video_time = 0  # Таймер для 1 FPS
         self.ignore_commands_until = 0
         self.current_msg_id = None
         
@@ -60,16 +62,25 @@ class VoiceService:
         self.history_cleared_in_this_turn = False
 
     def put_ws(self, msg):
+        # Защита от переполнения очереди при отсутствии Wi-Fi
+        if self.ws_queue.qsize() > 50:
+            try:
+                self.ws_queue.get_nowait()
+            except Exception:
+                pass
         self.loop.call_soon_threadsafe(self.ws_queue.put_nowait, msg)
 
     def get_volume(self, data):
         arr = np.frombuffer(bytes(data), dtype=np.int16).astype(np.float32)
-        if len(arr) == 0: return 0
+        if len(arr) == 0:
+            return 0
         return np.mean(np.abs(arr)) / 32768.0
 
     def audio_callback(self, in_data, frame_count, time_info, status):
-        if self.is_speaking or self.is_waiting_for_server: return (None, pyaudio.paContinue)
-        if time.time() < self.ignore_commands_until: return (None, pyaudio.paContinue)
+        if self.is_speaking or self.is_waiting_for_server:
+            return (None, pyaudio.paContinue)
+        if time.time() < self.ignore_commands_until:
+            return (None, pyaudio.paContinue)
 
         # Ресемплинг в 16000 Hz
         if self.sample_rate != 16000:
@@ -116,7 +127,8 @@ class VoiceService:
                     "ui_msg_id": self.current_msg_id
                 })
                 
-                if self.waiting_timer: self.waiting_timer.cancel()
+                if self.waiting_timer:
+                    self.waiting_timer.cancel()
                 self.waiting_timer = threading.Timer(10.0, self.server_finished_response)
                 self.waiting_timer.start()
         else:
@@ -169,32 +181,36 @@ class VoiceService:
         return (None, pyaudio.paContinue)
 
     def play_audio_chunk(self, pcm_data):
-        if not pcm_data: return
+        if not pcm_data:
+            return
         self.is_speaking = True
-        if self.player: self.player.set_volume_low()
-        try: self.audio_out.write(pcm_data)
-        except Exception as e: print(f"Ошибка вывода звука: {e}")
+        if self.player:
+            self.player.set_volume_low()
+        try:
+            self.audio_out.write(pcm_data)
+        except Exception as e:
+            print(f"Ошибка вывода звука: {e}")
 
     def server_finished_response(self):
-        if self.waiting_timer: self.waiting_timer.cancel()
+        if self.waiting_timer:
+            self.waiting_timer.cancel()
         self.is_speaking = False
         self.is_waiting_for_server = False
         self.pre_buffer.clear()
         self.history_cleared_in_this_turn = False
-        if self.player: self.player.set_volume_high()
+        if self.player:
+            self.player.set_volume_high()
 
-    # <--- ДОБАВЬ ПАРАМЕТР user_msg_id=None
     def process_action(self, action_type, action_value, user_msg_id=None):
         a_type = str(action_type).lower()
         a_val = str(action_value)
         
-        # --- НОВЫЙ БЛОК ДЛЯ ФОТО ---
+        # --- БЛОК ДЛЯ ФОТО ---
         if a_type == "request_screenshot":
             print(f"📸 Сервер запросил скриншот (msg_id={user_msg_id})!")
             if self.camera:
                 frame = self.camera.capture_base64()
                 if frame:
-                    # ДОБАВЛЕНЫ КЛЮЧИ type И command ДЛЯ МАРШРУТИЗАЦИИ СЕРВЕРА
                     self.put_ws({
                         "type": "web_command",
                         "command": "device_response",
@@ -217,7 +233,6 @@ class VoiceService:
                     "screenshot_base64_received": "", 
                     "user_msg_id": user_msg_id
                 })
-        # ---------------------------
 
         elif a_type == "очистка истории":
             self.message_history.clear()
@@ -226,10 +241,15 @@ class VoiceService:
             
         elif a_type == "музыка":
             cmd = a_val.lower()
-            if "включить" in cmd: self.player.update_playlist(); self.player.play(0)
-            elif "выключить" in cmd or "стоп" in cmd or "пауза" in cmd: self.player.stop()
-            elif "следующий" in cmd: self.player.next_track()
-            elif "предыдущий" in cmd: self.player.prev_track()
+            if "включить" in cmd:
+                self.player.update_playlist()
+                self.player.play(0)
+            elif "выключить" in cmd or "стоп" in cmd or "пауза" in cmd:
+                self.player.stop()
+            elif "следующий" in cmd:
+                self.player.next_track()
+            elif "предыдущий" in cmd:
+                self.player.prev_track()
             
         elif a_type == "смена голоса":
             valid_voices = ["Aoede", "Puck", "Kore", "Charon"]
@@ -238,10 +258,29 @@ class VoiceService:
                 state["voice_name"] = new_voice
                 print(f"🗣️ Установлен новый голос: {state['voice_name']}")
             
-        elif a_type == "движение":
+        elif a_type in ["движение", "робот", "моторы", "серво", "servo"]:
             direction = a_val.strip().lower()
-            if "вперед" in direction and self.robot:
+            if not self.robot:
+                return
+            if any(w in direction for w in ["вперед", "вперёд", "forward"]):
                 threading.Thread(target=self.robot.move_forward, daemon=True).start()
+            elif any(w in direction for w in ["назад", "backward", "back"]):
+                threading.Thread(target=self.robot.move_backward, daemon=True).start()
+            elif any(w in direction for w in ["влево", "лево", "left"]):
+                threading.Thread(target=self.robot.turn_left, daemon=True).start()
+            elif any(w in direction for w in ["вправо", "право", "right"]):
+                threading.Thread(target=self.robot.turn_right, daemon=True).start()
+            elif any(w in direction for w in ["стоп", "остановись", "стой", "stop"]):
+                threading.Thread(target=self.robot.stop, daemon=True).start()
+            elif any(w in direction for w in ["танец", "танцуй", "станцуй", "dance", "волна"]):
+                threading.Thread(target=self.robot.dance, daemon=True).start()
+            elif any(w in direction for w in ["центр", "исходное", "сброс", "reset", "center"]):
+                threading.Thread(target=self.robot.center_all, daemon=True).start()
+            else:
+                nums = re.findall(r'\d+', direction)
+                if nums:
+                    ang = max(0, min(180, int(nums[0])))
+                    threading.Thread(target=lambda: self.robot.set_all_angles(ang), daemon=True).start()
 
     def find_input_device(self):
         count = self.pa.get_device_count()
@@ -251,13 +290,19 @@ class VoiceService:
                 info = self.pa.get_device_info_by_index(i)
                 name = info.get('name', '').lower()
                 if info['maxInputChannels'] > 0:
-                    if "fifine" in name: candidate = i; break
-                    if "usb" in name and "ms2109" not in name and not candidate: candidate = i
-            except: continue
+                    if "fifine" in name:
+                        candidate = i
+                        break
+                    if "usb" in name and "ms2109" not in name and not candidate:
+                        candidate = i
+            except Exception:
+                continue
             
         if candidate is None:
-             for i in range(count):
-                 if self.pa.get_device_info_by_index(i).get('maxInputChannels') > 0: candidate = i; break
+            for i in range(count):
+                if self.pa.get_device_info_by_index(i).get('maxInputChannels') > 0:
+                    candidate = i
+                    break
         
         if candidate is not None:
             self.device_index = candidate
@@ -267,7 +312,8 @@ class VoiceService:
                         self.sample_rate = rate
                         print(f"✅ Микрофон [{candidate}] принял частоту: {rate} Hz")
                         return candidate
-                except: pass
+                except Exception:
+                    pass
             self.sample_rate = 16000
             return candidate
         return None
